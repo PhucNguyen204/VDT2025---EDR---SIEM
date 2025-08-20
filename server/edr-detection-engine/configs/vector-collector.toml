@@ -1,0 +1,199 @@
+# ====================================================================
+# EDR DETECTION ENGINE - VECTOR COLLECTOR CONFIG
+# ====================================================================
+# Tác giả: Senior Software Engineer - EDR Platform Team
+# Mô tả: Vector config để nhận logs từ agents và forward tới detection engine
+# ====================================================================
+
+data_dir = "/var/lib/vector/data"
+
+# ====================================================================
+# SOURCES - Nhận logs từ các agents
+# ====================================================================
+
+# HTTP source để nhận logs từ Windows/Linux agents
+[sources.agent_logs]
+type = "http"
+address = "0.0.0.0:8080"
+path = "/logs"
+
+# Demo logs để test (có thể disable trong production)
+[sources.demo_logs]
+type = "demo_logs"
+format = "json"
+interval = 30.0
+lines = [
+  '{"@timestamp":"2024-01-20T10:30:00.000Z","host":{"id":"demo-host-001","name":"DEMO-WORKSTATION"},"event":{"kind":"event","category":["process"],"type":["start"],"action":"process_created"},"process":{"pid":1234,"executable":"C:\\Windows\\System32\\notepad.exe","name":"notepad.exe","command_line":"notepad.exe document.txt"},"ecs":{"version":"8.6.0"},"message":"Demo process creation event"}',
+  '{"@timestamp":"2024-01-20T10:31:00.000Z","host":{"id":"demo-host-001","name":"DEMO-WORKSTATION"},"event":{"kind":"event","category":["network"],"type":["connection"],"action":"network_connection"},"network":{"transport":"tcp","direction":"outbound"},"destination":{"ip":"8.8.8.8","port":53},"process":{"name":"chrome.exe","pid":2345},"ecs":{"version":"8.6.0"},"message":"Demo network connection event"}'
+]
+
+# ====================================================================
+# TRANSFORMS - Xử lý và enrich logs
+# ====================================================================
+
+# Transform để chuẩn hóa và enrich events
+[transforms.normalize_events]
+type = "remap"
+inputs = ["agent_logs", "demo_logs"]
+source = '''
+# Đảm bảo có timestamp
+if !exists(.["@timestamp"]) {
+  .["@timestamp"] = now()
+}
+
+# Thêm collector metadata
+.collector = {
+  "name": "edr-vector-collector",
+  "version": "1.0.0",
+  "received_at": now()
+}
+
+# Normalize event structure
+if !exists(.event) {
+  .event = {}
+}
+
+# Ensure event has basic fields
+if !exists(.event.kind) {
+  .event.kind = "event"
+}
+
+# Đảm bảo có host info
+if !exists(.host) {
+  .host = {
+    "id": "unknown-host",
+    "name": "Unknown"
+  }
+}
+
+# Thêm severity level dựa trên event type
+if includes(.event.category, "process") {
+  if includes(string!(.process.command_line), "powershell") && includes(string!(.process.command_line), "-ExecutionPolicy") {
+    .threat_level = "high"
+  } else {
+    .threat_level = "low"
+  }
+} else if includes(.event.category, "network") {
+  .threat_level = "medium"
+} else {
+  .threat_level = "low"
+}
+
+# Parse Windows Event Log nếu có
+if exists(.winlog) {
+  .event.provider = .winlog.provider_name
+  .event.code = string(.winlog.event_id)
+  
+  # Map Sysmon Event IDs
+  if .winlog.provider_name == "Microsoft-Windows-Sysmon" {
+    if .winlog.event_id == 1 {
+      .event.action = "process_created"
+      .event.category = ["process"]
+      .event.type = ["start"]
+    } else if .winlog.event_id == 3 {
+      .event.action = "network_connection"
+      .event.category = ["network"]
+      .event.type = ["connection"]
+    } else if .winlog.event_id == 11 {
+      .event.action = "file_created"
+      .event.category = ["file"]
+      .event.type = ["creation"]
+    }
+  }
+}
+
+# Validate required fields
+if !exists(.host.id) {
+  .host.id = "missing-host-id"
+}
+
+if !exists(.ecs.version) {
+  .ecs = {"version": "8.6.0"}
+}
+
+# Log processing info
+log("Processed event from host: " + string(.host.name), level: "debug")
+'''
+
+# Transform để filter suspicious events (optional)
+[transforms.filter_suspicious]
+type = "filter"
+inputs = ["normalize_events"]
+condition = '''
+# Chỉ forward events có potential threat
+.threat_level == "high" || 
+.threat_level == "medium" ||
+includes(string(.process.command_line), "powershell") ||
+includes(string(.process.executable), "cmd.exe") ||
+includes(string(.destination.ip), "8.8.8.8") ||
+true  # For demo, forward all events
+'''
+
+# ====================================================================
+# SINKS - Gửi logs tới các destinations
+# ====================================================================
+
+# Forward tới EDR Detection Engine
+[sinks.edr_detection_engine]
+type = "http"
+inputs = ["filter_suspicious"]
+uri = "http://edr-detection-engine:8080/api/v1/events"
+method = "post"
+compression = "none"
+
+# Request configuration
+[sinks.edr_detection_engine.request]
+timeout_secs = 10
+retry_max_duration_secs = 60
+
+# Headers
+[sinks.edr_detection_engine.request.headers]
+Content-Type = "application/json"
+X-Source = "vector-collector"
+
+# Encoding
+[sinks.edr_detection_engine.encoding]
+codec = "json"
+
+# Buffer configuration
+[sinks.edr_detection_engine.buffer]
+type = "disk"
+max_size = 268435456  # 256MB
+when_full = "block"
+
+# Batch configuration
+[sinks.edr_detection_engine.batch]
+max_events = 100
+timeout_secs = 5
+
+# Console output để debug
+[sinks.console_debug]
+type = "console"
+inputs = ["filter_suspicious"]
+encoding.codec = "json"
+target = "stdout"
+
+# File output để backup
+[sinks.file_backup]
+type = "file"
+inputs = ["normalize_events"]
+path = "/var/log/vector/edr-events-%Y-%m-%d.log"
+encoding.codec = "json"
+
+# ====================================================================
+# API CONFIGURATION
+# ====================================================================
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+playground = false
+
+# ====================================================================
+# LOGGING CONFIGURATION
+# ====================================================================
+
+[log_schema]
+host_key = "host"
+message_key = "message"
+timestamp_key = "@timestamp"

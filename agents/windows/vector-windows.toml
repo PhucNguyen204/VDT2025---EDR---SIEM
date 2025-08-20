@@ -1,0 +1,599 @@
+# ====================================================================
+# VECTOR EDR AGENT - WINDOWS CONFIGURATION
+# ====================================================================
+# Tác giả: Senior Software Engineer - EDR Platform Team
+# Mô tả: Cấu hình Vector agent để thu thập, xử lý và gửi log từ Windows endpoint
+# Phiên bản: 1.0.0
+# Ngày tạo: 2024-01-01
+# ====================================================================
+
+# --------------------------------------------------------------------
+# GLOBAL CONFIGURATION - CẤU HÌNH TOÀN CỤC
+# --------------------------------------------------------------------
+# Vector sẽ chạy với các thông số tối ưu cho môi trường production
+
+# Đường dẫn file log của Vector (để debug và monitoring)
+data_dir = "C:\\ProgramData\\vector\\data"
+
+# Cấu hình log level cho Vector engine
+[log_schema]
+host_key = "host.name"
+message_key = "message"
+timestamp_key = "@timestamp"
+
+# ====================================================================
+# SOURCES - NGUỒN THU THẬP DỮ LIỆU
+# ====================================================================
+# Phần này định nghĩa các nguồn dữ liệu mà Vector sẽ thu thập từ endpoint
+
+# --------------------------------------------------------------------
+# [1] WINDOWS SECURITY EVENT LOG - LOG BẢO MẬT WINDOWS
+# --------------------------------------------------------------------
+[sources.windows_security_events]
+type = "winlog"
+# Channel Windows Event Log Security - chứa thông tin đăng nhập, quyền truy cập
+channel = "Security"
+
+# Bộ lọc sự kiện quan trọng cho EDR:
+# 4624: Đăng nhập thành công (Successful Logon)
+# 4625: Đăng nhập thất bại (Failed Logon)  
+# 4648: Explicit credential logon (RunAs)
+# 4672: Special privileges assigned (Admin logon)
+# 4698: Scheduled task created
+# 4699: Scheduled task deleted
+# 4702: Scheduled task updated
+event_filter = '''
+    EventID = 4624 or EventID = 4625 or EventID = 4648 or 
+    EventID = 4672 or EventID = 4698 or EventID = 4699 or EventID = 4702
+'''
+
+# Cấu hình hiệu năng: đọc tối đa 1000 event/lần để tránh quá tải
+max_read_bytes = 65536
+poll_interval_ms = 1000
+
+# --------------------------------------------------------------------
+# [2] WINDOWS SYSTEM EVENT LOG - LOG HỆ THỐNG WINDOWS  
+# --------------------------------------------------------------------
+[sources.windows_system_events]
+type = "winlog"
+channel = "System"
+
+# Lọc các sự kiện hệ thống quan trọng:
+# 7034: Service crashed unexpectedly (dịch vụ crash bất thường)
+# 7040: Service start type changed (thay đổi kiểu khởi động service)
+# 7045: New service installed (cài đặt service mới)
+event_filter = '''
+    EventID = 7034 or EventID = 7040 or EventID = 7045
+'''
+
+# --------------------------------------------------------------------
+# [3] SYSMON OPERATIONAL LOG - CORE EDR DATA SOURCE
+# --------------------------------------------------------------------
+# Sysmon là nguồn dữ liệu QUAN TRỌNG NHẤT cho EDR
+# Cung cấp thông tin chi tiết về: process, network, file, registry
+[sources.sysmon_events]
+type = "winlog"
+channel = "Microsoft-Windows-Sysmon/Operational"
+
+# Thu thập TẤT CẢ event từ Sysmon vì chúng đều có giá trị cho EDR
+# Event ID 1: Process Creation (tạo tiến trình)
+# Event ID 3: Network Connection (kết nối mạng)
+# Event ID 5: Process Terminated (kết thúc tiến trình)
+# Event ID 11: File Create (tạo file)
+# Event ID 12,13,14: Registry events (sửa đổi registry)
+# Event ID 22: DNS Query (truy vấn DNS)
+
+# Cấu hình hiệu năng cao cho Sysmon vì volume lớn
+max_read_bytes = 131072  # 128KB buffer
+poll_interval_ms = 500   # Đọc nhanh hơn (500ms)
+
+# --------------------------------------------------------------------
+# [4] POWERSHELL OPERATIONAL LOG - PHÁT HIỆN POWERSHELL ATTACK
+# --------------------------------------------------------------------
+[sources.powershell_events]
+type = "winlog"
+channel = "Microsoft-Windows-PowerShell/Operational"
+
+# Tập trung vào PowerShell Script Block Logging
+# Event ID 4103: Module Logging (command execution)
+# Event ID 4104: Script Block Logging (script content)
+event_filter = 'EventID = 4103 or EventID = 4104'
+
+# ====================================================================
+# TRANSFORMS - XỬ LÝ VÀ CHUẨN HÓA DỮ LIỆU
+# ====================================================================
+# Đây là "bộ não" của agent - chuyển đổi raw Windows events thành ECS format
+
+# --------------------------------------------------------------------
+# [1] MAIN TRANSFORM - ECS NORMALIZATION ENGINE
+# --------------------------------------------------------------------
+[transforms.edr_ecs_normalizer]
+type = "remap"
+# Xử lý tất cả các nguồn dữ liệu
+inputs = [
+    "windows_security_events", 
+    "windows_system_events", 
+    "sysmon_events", 
+    "powershell_events"
+]
+
+# VRL (Vector Remap Language) Script - Chuyển đổi dữ liệu sang ECS format
+source = '''
+# ================================================================
+# BƯỚC 1: THIẾT LẬP METADATA CƠ BẢN CHO MỌI EVENT
+# ================================================================
+
+# Lấy thông tin host từ biến môi trường (được set bởi install script)
+.host.id = get_env_var("EDR_HOST_ID") ?? uuid_v4()
+.host.name = get_hostname!()
+.host.os.platform = "windows"
+.host.os.family = "windows"
+
+# Thông tin agent
+.agent.id = get_env_var("EDR_HOST_ID") ?? uuid_v4()
+.agent.type = "vector-edr"
+.agent.version = get_env_var("VECTOR_VERSION") ?? vector_version()
+
+# ECS version compliance
+.ecs.version = "8.6.0"
+
+# Timestamp chuẩn ISO8601
+.@timestamp = .timestamp ?? now()
+
+# Thông tin cơ bản từ Windows Event
+.event.provider = .provider_name ?? "unknown"
+.event.code = string(.event_id) ?? "0"
+.event.original = .message
+.event.kind = "event"
+
+# Windows event specific fields
+.winlog.channel = .channel
+.winlog.computer_name = .computer_name
+.winlog.event_id = .event_id
+.winlog.record_id = .record_id
+
+# ================================================================
+# BƯỚC 2: XỬ LÝ SYSMON EVENTS (CORE EDR LOGIC)
+# ================================================================
+
+if .provider_name == "Microsoft-Windows-Sysmon" {
+    .event.module = "sysmon"
+    
+    # Lấy EventData - nơi chứa thông tin quan trọng nhất
+    event_data = .event_data ?? {}
+    
+    # [SYSMON EVENT ID 1] - PROCESS CREATION (Tạo tiến trình)
+    # Đây là event QUAN TRỌNG NHẤT cho việc phát hiện malware
+    if .event_id == 1 {
+        .event.category = ["process"]
+        .event.type = ["start"]
+        .event.action = "process_created"
+        
+        # Thông tin tiến trình con (newly created)
+        .process.pid = to_int(event_data.ProcessId) ?? 0
+        .process.executable = event_data.Image
+        .process.command_line = event_data.CommandLine
+        .process.name = basename(event_data.Image) ?? "unknown"
+        .process.hash.sha256 = event_data.SHA256  # File hash để phát hiện malware
+        
+        # Sysmon GUID - unique identifier cho process
+        .process.entity_id = event_data.ProcessGuid
+        
+        # Thông tin tiến trình cha (parent process)
+        .process.parent.pid = to_int(event_data.ParentProcessId) ?? 0
+        .process.parent.executable = event_data.ParentImage
+        .process.parent.command_line = event_data.ParentCommandLine
+        .process.parent.name = basename(event_data.ParentImage) ?? "unknown"
+        .process.parent.entity_id = event_data.ParentProcessGuid
+        
+        # User context (user nào thực thi process)
+        .user.name = event_data.User
+        if contains(.user.name, "\\\\") {
+            user_parts = split(.user.name, "\\\\")
+            .user.domain = user_parts[0]
+            .user.name = user_parts[1]
+        }
+        
+        # Thời gian creation (UTC)
+        .process.start = parse_timestamp(event_data.UtcTime, "%Y-%m-%d %H:%M:%S.%3f") ?? .@timestamp
+    }
+    
+    # [SYSMON EVENT ID 3] - NETWORK CONNECTION (Kết nối mạng)
+    # Critical để phát hiện C2 communication và data exfiltration
+    else if .event_id == 3 {
+        .event.category = ["network"]
+        .event.type = ["connection"]
+        .event.action = "network_connection"
+        
+        # Process thực hiện kết nối
+        .process.pid = to_int(event_data.ProcessId) ?? 0
+        .process.executable = event_data.Image
+        .process.name = basename(event_data.Image) ?? "unknown"
+        .process.entity_id = event_data.ProcessGuid
+        
+        # Network connection details
+        .network.transport = downcase(event_data.Protocol) ?? "unknown"
+        .network.direction = if event_data.Initiated == "true" { "outbound" } else { "inbound" }
+        
+        # Source (local endpoint)
+        .source.ip = event_data.SourceIp
+        .source.port = to_int(event_data.SourcePort) ?? 0
+        
+        # Destination (remote endpoint)
+        .destination.ip = event_data.DestinationIp  
+        .destination.port = to_int(event_data.DestinationPort) ?? 0
+        
+        # Determine if connection is external/internal
+        if .destination.ip != null {
+            # Check for private IP ranges (RFC 1918)
+            .network.type = if (
+                starts_with(.destination.ip, "10.") or
+                starts_with(.destination.ip, "192.168.") or  
+                starts_with(.destination.ip, "172.16.") or
+                starts_with(.destination.ip, "172.17.") or
+                starts_with(.destination.ip, "172.18.") or
+                starts_with(.destination.ip, "172.19.") or
+                starts_with(.destination.ip, "172.20.") or
+                starts_with(.destination.ip, "172.21.") or
+                starts_with(.destination.ip, "172.22.") or
+                starts_with(.destination.ip, "172.23.") or
+                starts_with(.destination.ip, "172.24.") or
+                starts_with(.destination.ip, "172.25.") or
+                starts_with(.destination.ip, "172.26.") or
+                starts_with(.destination.ip, "172.27.") or
+                starts_with(.destination.ip, "172.28.") or
+                starts_with(.destination.ip, "172.29.") or
+                starts_with(.destination.ip, "172.30.") or
+                starts_with(.destination.ip, "172.31.") or
+                starts_with(.destination.ip, "127.") or
+                .destination.ip == "::1"
+            ) { "internal" } else { "external" }
+        }
+        
+        # User context
+        .user.name = event_data.User
+        if contains(.user.name, "\\\\") {
+            user_parts = split(.user.name, "\\\\")
+            .user.domain = user_parts[0] 
+            .user.name = user_parts[1]
+        }
+    }
+    
+    # [SYSMON EVENT ID 5] - PROCESS TERMINATED
+    else if .event_id == 5 {
+        .event.category = ["process"]
+        .event.type = ["end"]
+        .event.action = "process_terminated"
+        
+        .process.pid = to_int(event_data.ProcessId) ?? 0
+        .process.executable = event_data.Image
+        .process.name = basename(event_data.Image) ?? "unknown"
+        .process.entity_id = event_data.ProcessGuid
+    }
+    
+    # [SYSMON EVENT ID 11] - FILE CREATE (Tạo file)
+    # Important để phát hiện malware dropping files
+    else if .event_id == 11 {
+        .event.category = ["file"]
+        .event.type = ["creation"]
+        .event.action = "file_created"
+        
+        .process.pid = to_int(event_data.ProcessId) ?? 0
+        .process.executable = event_data.Image
+        .process.name = basename(event_data.Image) ?? "unknown"
+        .process.entity_id = event_data.ProcessGuid
+        
+        # File information
+        .file.path = event_data.TargetFilename
+        .file.name = basename(event_data.TargetFilename) ?? "unknown"
+        .file.extension = get_file_extension(event_data.TargetFilename)
+        
+        # File creation time
+        .file.created = parse_timestamp(event_data.CreationUtcTime, "%Y-%m-%d %H:%M:%S.%3f") ?? .@timestamp
+    }
+    
+    # [SYSMON EVENT ID 22] - DNS QUERY 
+    # Critical để phát hiện DNS tunneling và malicious domains
+    else if .event_id == 22 {
+        .event.category = ["network"]
+        .event.type = ["info"]
+        .event.action = "dns_query"
+        
+        .process.pid = to_int(event_data.ProcessId) ?? 0
+        .process.executable = event_data.Image
+        .process.name = basename(event_data.Image) ?? "unknown"
+        .process.entity_id = event_data.ProcessGuid
+        
+        # DNS query details
+        .dns.question.name = event_data.QueryName
+        .dns.question.type = event_data.QueryType ?? "A"
+        
+        # DNS response (if available)
+        if exists(event_data.QueryResults) && event_data.QueryResults != "-" {
+            .dns.answers = split(event_data.QueryResults, ";")
+        }
+    }
+}
+
+# ================================================================
+# BƯỚC 3: XỬ LÝ WINDOWS SECURITY EVENTS (4624, 4625, etc.)
+# ================================================================
+
+else if .provider_name == "Microsoft-Windows-Security-Auditing" {
+    .event.module = "security"
+    event_data = .event_data ?? {}
+    
+    # [SECURITY EVENT 4624] - SUCCESSFUL LOGON
+    if .event_id == 4624 {
+        .event.category = ["authentication"]
+        .event.type = ["start"]
+        .event.action = "user_logon_success"
+        .event.outcome = "success"
+        
+        # User information
+        .user.name = event_data.TargetUserName
+        .user.domain = event_data.TargetDomainName
+        .user.id = event_data.TargetUserSid
+        
+        # Logon information
+        .winlog.logon.type = to_int(event_data.LogonType) ?? 0
+        .winlog.logon.process = event_data.LogonProcessName
+        .winlog.logon.authentication_package = event_data.AuthenticationPackageName
+        
+        # Source information (where login came from)
+        if exists(event_data.IpAddress) && event_data.IpAddress != "-" {
+            .source.ip = event_data.IpAddress
+        }
+        if exists(event_data.WorkstationName) && event_data.WorkstationName != "-" {
+            .source.domain = event_data.WorkstationName
+        }
+    }
+    
+    # [SECURITY EVENT 4625] - FAILED LOGON
+    else if .event_id == 4625 {
+        .event.category = ["authentication"]
+        .event.type = ["start"]
+        .event.action = "user_logon_failure"
+        .event.outcome = "failure"
+        
+        .user.name = event_data.TargetUserName
+        .user.domain = event_data.TargetDomainName
+        
+        # Failure information
+        .winlog.logon.failure.reason = event_data.FailureReason
+        .winlog.logon.failure.status = event_data.Status
+        .winlog.logon.failure.sub_status = event_data.SubStatus
+        
+        # Source information
+        if exists(event_data.IpAddress) && event_data.IpAddress != "-" {
+            .source.ip = event_data.IpAddress
+        }
+        if exists(event_data.WorkstationName) && event_data.WorkstationName != "-" {
+            .source.domain = event_data.WorkstationName
+        }
+    }
+    
+    # [SECURITY EVENT 4648] - EXPLICIT CREDENTIAL LOGON (RunAs)
+    else if .event_id == 4648 {
+        .event.category = ["authentication"]
+        .event.type = ["start"]
+        .event.action = "explicit_credential_logon"
+        
+        .user.name = event_data.SubjectUserName
+        .user.domain = event_data.SubjectDomainName
+        
+        # Target information (account being used)
+        .winlog.target_user.name = event_data.TargetUserName
+        .winlog.target_user.domain = event_data.TargetDomainName
+        .winlog.target_server = event_data.TargetServerName
+        
+        # Process information
+        .process.executable = event_data.ProcessName
+        .process.name = basename(event_data.ProcessName) ?? "unknown"
+        .process.pid = to_int(event_data.ProcessId) ?? 0
+    }
+}
+
+# ================================================================
+# BƯỚC 4: XỬ LÝ POWERSHELL EVENTS  
+# ================================================================
+
+else if .provider_name == "Microsoft-Windows-PowerShell" {
+    .event.module = "powershell"
+    event_data = .event_data ?? {}
+    
+    # [POWERSHELL EVENT 4104] - SCRIPT BLOCK LOGGING
+    if .event_id == 4104 {
+        .event.category = ["process"]
+        .event.type = ["info"]
+        .event.action = "powershell_script_block"
+        
+        # Script content (có thể chứa malicious code)
+        .powershell.script.text = event_data.ScriptBlockText
+        .powershell.script.id = event_data.ScriptBlockId
+        
+        # Security level
+        if exists(event_data.MessageNumber) && exists(event_data.MessageTotal) {
+            .powershell.script.block_number = to_int(event_data.MessageNumber) ?? 1
+            .powershell.script.block_total = to_int(event_data.MessageTotal) ?? 1
+        }
+    }
+}
+
+# ================================================================
+# BƯỚC 5: DỌN DẸP VÀ TỐI ƯU HÓA DỮ LIỆU
+# ================================================================
+
+# Xóa các trường không cần thiết để tiết kiệm bandwidth
+del(.event_data)
+del(.provider_name)  
+del(.timestamp)
+del(.channel)
+del(.computer_name)
+del(.keywords)
+del(.opcode)
+del(.task)
+del(.level)
+
+# Thêm metadata cuối cùng
+.labels.environment = get_env_var("EDR_ENVIRONMENT") ?? "production"
+.labels.datacenter = get_env_var("EDR_DATACENTER") ?? "default"
+
+# Đánh dấu thời gian xử lý
+.edr.processed_at = now()
+.edr.agent_version = "1.0.0"
+
+# Helper functions (định nghĩa các hàm phụ trợ)
+def get_file_extension(file_path) {
+    parts = split(file_path, ".")
+    if length(parts) > 1 {
+        return downcase(parts[-1])
+    }
+    return null
+}
+
+def basename(path) {
+    if path == null { return null }
+    parts = split(path, "\\\\")
+    if length(parts) > 0 {
+        return parts[-1]
+    }
+    return path
+}
+'''
+
+# ====================================================================
+# SINKS - ĐÍCH ĐẾN CỦA DỮ LIỆU (KAFKA)
+# ====================================================================
+
+# --------------------------------------------------------------------
+# [1] KAFKA SINK - GỬI DỮ LIỆU ĐẾN KAFKA CLUSTER
+# --------------------------------------------------------------------
+[sinks.kafka_edr_events]
+type = "kafka"
+inputs = ["edr_ecs_normalizer"]
+
+# Kafka cluster endpoints - lấy từ biến môi trường
+bootstrap_servers = "${KAFKA_BROKERS}"
+
+# Topic đích - tất cả events đều gửi vào topic này
+topic = "edr-events-normalized"
+
+# PARTITION KEY STRATEGY - CỰC KỲ QUAN TRỌNG!
+# Sử dụng host.id làm partition key để đảm bảo:
+# 1. Tất cả events từ cùng 1 host đều đi vào cùng 1 partition
+# 2. Điều này cho phép Flink xây dựng process tree một cách chính xác
+# 3. Đảm bảo ordering cho các events từ cùng endpoint
+key_field = "host.id"
+
+# Compression để tiết kiệm bandwidth
+compression = "lz4"
+
+# --------------------------------------------------------------------
+# [2] BUFFERING CONFIGURATION - CẤU HÌNH BỘ ĐẾM
+# --------------------------------------------------------------------
+[sinks.kafka_edr_events.buffer]
+# Sử dụng disk buffer để đảm bảo không mất dữ liệu
+type = "disk"
+# Buffer size tối đa: 2GB (cho phép agent hoạt động offline trong thời gian ngắn)
+max_size = 2147483648
+# Khi buffer đầy, block thay vì drop data (data integrity > performance)
+when_full = "block"
+
+# --------------------------------------------------------------------
+# [3] BATCH CONFIGURATION - CẤU HÌNH BATCH GỬI
+# --------------------------------------------------------------------
+[sinks.kafka_edr_events.batch]
+# Timeout: gửi batch sau tối đa 5 giây (balance giữa latency và throughput)
+timeout_secs = 5
+# Max events per batch: 1000 events
+max_events = 1000  
+# Max batch size: 1MB
+max_bytes = 1048576
+
+# --------------------------------------------------------------------
+# [4] SECURITY CONFIGURATION - CẤU HÌNH BẢO MẬT
+# --------------------------------------------------------------------
+[sinks.kafka_edr_events.tls]
+# Bắt buộc sử dụng TLS encryption
+enabled = true
+# CA certificate để verify Kafka brokers
+ca_file = "${TLS_CA_FILE}"
+
+# Nếu sử dụng mTLS (mutual TLS authentication)
+# cert_file = "${TLS_CERT_FILE}"
+# key_file = "${TLS_KEY_FILE}"
+
+# SASL Authentication (nếu cần)
+# Lưu ý: Windows build của Vector có thể không support SASL
+# [sinks.kafka_edr_events.sasl]
+# enabled = true
+# mechanism = "SCRAM-SHA-512"
+# username = "${KAFKA_USERNAME}"
+# password = "${KAFKA_PASSWORD}"
+
+# --------------------------------------------------------------------
+# [5] ERROR HANDLING - XỬ LÝ LỖI
+# --------------------------------------------------------------------
+[sinks.kafka_edr_events.request]
+# Retry configuration
+retry_initial_backoff_secs = 1
+retry_max_duration_secs = 300  # 5 phút
+retry_multiplier = 2
+
+# Request timeout
+timeout_secs = 60
+
+# ====================================================================
+# HEALTHCHECK SINK - MONITORING AGENT HEALTH
+# ====================================================================
+# Sink phụ để gửi healthcheck data cho monitoring
+
+[sinks.healthcheck]
+type = "http"
+inputs = ["edr_ecs_normalizer"]
+
+# Chỉ gửi sample data để monitoring (mỗi 60 giây 1 lần)
+uri = "${HEALTHCHECK_ENDPOINT}/agent-health"
+method = "POST"
+
+# Chỉ gửi metadata, không gửi sensitive data
+encoding.codec = "json"
+
+# Rate limiting để tránh spam monitoring endpoint
+[sinks.healthcheck.batch]
+timeout_secs = 60
+max_events = 10
+
+# ====================================================================
+# DEBUG SINK - CHỈ DÙNG TRONG DEVELOPMENT  
+# ====================================================================
+# Uncomment phần này khi cần debug trong development environment
+
+# [sinks.debug_console]
+# type = "console"
+# inputs = ["edr_ecs_normalizer"]
+# encoding.codec = "json"
+
+# ====================================================================
+# END OF CONFIGURATION
+# ====================================================================
+# 
+# Ghi chú quan trọng:
+# 1. File này cần được customize cho từng môi trường (dev/staging/prod)
+# 2. Các biến môi trường cần được set trước khi chạy Vector
+# 3. Cần monitor performance và adjust buffer/batch size theo nhu cầu
+# 4. Log level của Vector có thể được điều chỉnh qua VECTOR_LOG environment variable
+#
+# Biến môi trường cần thiết:
+# - EDR_HOST_ID: Unique identifier cho endpoint
+# - KAFKA_BROKERS: Danh sách Kafka brokers (host:port,host:port)
+# - TLS_CA_FILE: Đường dẫn đến CA certificate file
+# - EDR_ENVIRONMENT: Môi trường triển khai (dev/staging/prod)
+# - EDR_DATACENTER: Datacenter location (optional)
+# - HEALTHCHECK_ENDPOINT: URL endpoint cho healthcheck (optional)
+#
+# Author: Senior Software Engineer - EDR Platform Team
+# Contact: edr-team@company.com
+# Documentation: https://company.wiki/edr-platform
+# ====================================================================
