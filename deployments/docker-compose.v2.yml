@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # EDR v2 Detection Engine
+  edr-v2-engine:
+    build:
+      context: .. # Build context is the root of the project
+      dockerfile: deployments/Dockerfile.v2 # Path to the Dockerfile
+    container_name: edr-v2-engine
+    ports:
+      - "8080:8080"  # Web dashboard và API
+    volumes:
+      - ../sigma/rules:/app/sigma/rules:ro  # Mount Sigma rules
+    environment:
+      - EDR_PORT=8080
+      - EDR_RULES_DIR=/app/sigma/rules
+      - EDR_LOG_LEVEL=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Vector Collector (nhận logs từ agent và forward tới EDR v2 engine)
+  vector-collector:
+    image: timberio/vector:0.36.0-alpine
+    container_name: edr-v2-vector-collector
+    ports:
+      - "8081:8080"  # HTTP source cho agents
+      - "8686:8686"  # Vector API
+    volumes:
+      - ../configs/vector-basic.toml:/etc/vector/vector.toml:ro # Mount config file
+      - vector-logs:/var/log/vector
+    environment:
+      - VECTOR_LOG_LEVEL=info
+    command: ["--config", "/etc/vector/vector.toml"]
+    restart: unless-stopped
+    depends_on:
+      edr-v2-engine:
+        condition: service_healthy
+
+  # Dozzle - Log viewer
+  edr-log-viewer:
+    image: amir20/dozzle:latest
+    container_name: edr-v2-log-viewer
+    ports:
+      - "8889:8080"  # Changed from 8888 to avoid conflict
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  vector-logs:
+    driver: local
+
+networks:
+  default:
+    name: edr-v2-network

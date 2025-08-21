@@ -1,307 +1,129 @@
 # ====================================================================
-# MAKEFILE - EDR PLATFORM DEVELOPMENT
-# ====================================================================
-# Tác giả: Senior Software Engineer - EDR Platform Team
-# Mô tả: Makefile để quản lý development workflow cho EDR platform
-# Phiên bản: 1.0.0
-# Ngày tạo: 2024-01-01
+# VDT2025 EDR - Makefile
 # ====================================================================
 
-.PHONY: help dev up down clean logs status test build install-windows install-linux
+.PHONY: build clean run test docker-build docker-up docker-down help
 
-# Default target
-.DEFAULT_GOAL := help
+# Go parameters
+GOCMD=go
+GOBUILD=$(GOCMD) build
+GOCLEAN=$(GOCMD) clean
+GOTEST=$(GOCMD) test
+GOGET=$(GOCMD) get
+GOMOD=$(GOCMD) mod
 
-# Colors for output
-RED := \033[0;31m
-GREEN := \033[0;32m
-YELLOW := \033[1;33m
-BLUE := \033[0;34m
-NC := \033[0m # No Color
+# Binary names
+BINARY_NAME=edr-server
+BINARY_V2=edr-v2
+BINARY_PATH=./bin/$(BINARY_NAME)
+BINARY_V2_PATH=./bin/$(BINARY_V2)
 
-# Project configuration
-PROJECT_NAME := edr-platform
-DOCKER_COMPOSE_FILE := infrastructure/docker-compose.yml
-NETWORK_NAME := edr-network
+# Build the original binary
+build:
+	@echo "🔨 Building $(BINARY_NAME)..."
+	@mkdir -p bin
+	$(GOBUILD) -o $(BINARY_PATH) ./cmd/edr-server/
 
-# ====================================================================
-# HELP - HIỂN THỊ HƯỚNG DẪN SỬ DỤNG
-# ====================================================================
-help: ## Hiển thị help này
-	@echo "$(GREEN)======================================"
-	@echo "EDR Platform Development Makefile"
-	@echo "======================================$(NC)"
-	@echo ""
-	@echo "$(BLUE)Available commands:$(NC)"
-	@awk 'BEGIN {FS = ":.*##"; printf ""} /^[a-zA-Z_-]+:.*##/ { printf "  $(YELLOW)%-20s$(NC) %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
-	@echo ""
-	@echo "$(BLUE)Examples:$(NC)"
-	@echo "  make dev                    # Khởi động development environment"
-	@echo "  make logs service=kafka     # Xem logs của Kafka service"
-	@echo "  make install-windows        # Cài đặt agent trên Windows"
-	@echo ""
+# Build EDR v2
+build-v2:
+	@echo "🔨 Building $(BINARY_V2)..."
+	@mkdir -p bin
+	$(GOBUILD) -o $(BINARY_V2_PATH) ./cmd/edr-v2/
 
-# ====================================================================
-# DEVELOPMENT ENVIRONMENT
-# ====================================================================
+# Clean build artifacts
+clean:
+	@echo "🧹 Cleaning..."
+	$(GOCLEAN)
+	rm -rf bin/
 
-dev: ## Khởi động development environment (full stack)
-	@echo "$(GREEN)Khởi động EDR Platform development environment...$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) up -d
-	@echo "$(GREEN)✅ Development environment đã sẵn sàng!$(NC)"
-	@echo ""
-	@echo "$(BLUE)Services URLs:$(NC)"
-	@echo "  Flink Dashboard:        http://localhost:8081"
-	@echo "  OpenSearch Dashboards:  http://localhost:5601"
-	@echo "  MinIO Console:          http://localhost:9001 (minioadmin/minioadmin)"
-	@echo "  Process Graph API:      http://localhost:8080"
-	@echo "  Grafana:               http://localhost:3000 (admin/admin)"
-	@echo "  Vector Aggregator API:  http://localhost:8686"
-	@echo ""
-	@echo "$(YELLOW)Chờ tất cả services khởi động hoàn toàn...$(NC)"
-	@sleep 30
-	@$(MAKE) status
+# Run the original application
+run: build
+	@echo "🚀 Running $(BINARY_NAME)..."
+	$(BINARY_PATH)
 
-up: dev ## Alias cho dev command
+# Run EDR v2
+run-v2: build-v2
+	@echo "🚀 Running $(BINARY_V2)..."
+	$(BINARY_V2_PATH)
 
-minimal: ## Khởi động minimal stack (chỉ core services)
-	@echo "$(GREEN)Khởi động minimal EDR stack...$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) up -d zookeeper kafka opensearch
-	@echo "$(GREEN)✅ Minimal stack đã sẵn sàng!$(NC)"
+# Run tests
+test:
+	@echo "🧪 Running tests..."
+	$(GOTEST) -v ./...
 
-down: ## Dừng tất cả services
-	@echo "$(RED)Đang dừng EDR Platform...$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) down
-	@echo "$(RED)✅ Đã dừng tất cả services$(NC)"
+# Tidy dependencies
+tidy:
+	@echo "🔧 Tidying dependencies..."
+	$(GOMOD) tidy
 
-clean: ## Dừng services và xóa volumes
-	@echo "$(RED)Đang dừng và xóa tất cả data...$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) down -v --remove-orphans
-	@docker system prune -f
-	@echo "$(RED)✅ Đã xóa tất cả data và containers$(NC)"
+# Docker commands for EDR v1
+docker-build:
+	@echo "🐳 Building Docker image for EDR v1..."
+	cd deployments && docker compose build
 
-restart: down up ## Restart toàn bộ stack
+docker-up:
+	@echo "🐳 Starting EDR v1 containers..."
+	cd deployments && docker compose up -d
 
-# ====================================================================
-# MONITORING & DEBUGGING
-# ====================================================================
+docker-down:
+	@echo "🐳 Stopping EDR v1 containers..."
+	cd deployments && docker compose down
 
-status: ## Kiểm tra trạng thái services
-	@echo "$(BLUE)Trạng thái services:$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) ps
-	@echo ""
-	@echo "$(BLUE)Health check:$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T kafka kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null || echo "❌ Kafka chưa sẵn sàng"
-	@curl -s http://localhost:9200/_cluster/health?pretty 2>/dev/null | grep -q '"status":"green"' && echo "✅ OpenSearch healthy" || echo "❌ OpenSearch chưa sẵn sàng"
-	@curl -s http://localhost:8081/overview 2>/dev/null | grep -q '"taskmanagers"' && echo "✅ Flink healthy" || echo "❌ Flink chưa sẵn sàng"
+docker-logs:
+	@echo "📋 Showing EDR v1 container logs..."
+	cd deployments && docker compose logs -f
 
-logs: ## Xem logs của services (sử dụng: make logs service=kafka)
-ifdef service
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) logs -f $(service)
-else
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) logs -f
-endif
+# Docker commands for EDR v2
+docker-build-v2:
+	@echo "🐳 Building Docker image for EDR v2..."
+	cd deployments && docker compose -f docker-compose.v2.yml build
 
-shell: ## Vào shell của service (sử dụng: make shell service=kafka)
-ifndef service
-	@echo "$(RED)Error: Cần chỉ định service. VD: make shell service=kafka$(NC)"
-	@exit 1
-endif
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) exec $(service) /bin/bash
+docker-up-v2:
+	@echo "🐳 Starting EDR v2 containers..."
+	cd deployments && docker compose -f docker-compose.v2.yml up -d
 
-kafka-topics: ## Liệt kê Kafka topics
-	@echo "$(BLUE)Kafka topics:$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) exec kafka kafka-topics --list --bootstrap-server localhost:9092
+docker-down-v2:
+	@echo "🐳 Stopping EDR v2 containers..."
+	cd deployments && docker compose -f docker-compose.v2.yml down
 
-kafka-consume: ## Consume messages từ topic (sử dụng: make kafka-consume topic=edr-events-normalized)
-ifndef topic
-	@echo "$(RED)Error: Cần chỉ định topic. VD: make kafka-consume topic=edr-events-normalized$(NC)"
-	@exit 1
-endif
-	@echo "$(BLUE)Consuming từ topic: $(topic)$(NC)"
-	@docker-compose -f $(DOCKER_COMPOSE_FILE) exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic $(topic) --from-beginning
+docker-logs-v2:
+	@echo "📋 Showing EDR v2 container logs..."
+	cd deployments && docker compose -f docker-compose.v2.yml logs -f
 
-# ====================================================================
-# TESTING
-# ====================================================================
+# Demo attack for original EDR
+demo:
+	@echo "⚔️ Running SSH brute-force attack demo..."
+	powershell.exe -ExecutionPolicy Bypass -File ./examples/ssh_attack_simple.ps1
 
-test: ## Chạy integration tests
-	@echo "$(BLUE)Chạy integration tests...$(NC)"
-	@./tests/integration/run-tests.sh
+# Demo multi-attack for EDR v2
+demo-v2:
+	@echo "⚔️ Running multi-attack simulation demo..."
+	powershell.exe -ExecutionPolicy Bypass -File ./examples/multi_attack_simulation.ps1
 
-test-agents: ## Test agent configurations
-	@echo "$(BLUE)Testing Vector configurations...$(NC)"
-	@vector validate agents/windows/vector-windows.toml || echo "❌ Windows config có lỗi"
-	@vector validate agents/linux/vector-linux.toml || echo "❌ Linux config có lỗi"
-	@vector validate infrastructure/vector-aggregator.toml || echo "❌ Aggregator config có lỗi"
-	@echo "✅ Tất cả Vector configs hợp lệ"
+# Comprehensive attack simulation
+demo-comprehensive:
+	@echo "🔥 Running comprehensive attack simulation (SSH, XSS, SQLi, Scanning)..."
+	powershell.exe -ExecutionPolicy Bypass -File ./examples/comprehensive_attack_simulation.ps1
 
-send-test-event: ## Gửi test event tới Kafka
-	@echo "$(BLUE)Gửi test event...$(NC)"
-	@echo '{"@timestamp":"$(shell date -u +%Y-%m-%dT%H:%M:%S.000Z)","host":{"id":"test-host","name":"test-machine"},"agent":{"id":"test-agent","type":"test","version":"1.0.0"},"event":{"kind":"event","category":["process"],"action":"test_event"},"ecs":{"version":"8.6.0"},"message":"Test event from Makefile"}' | \
-	docker-compose -f $(DOCKER_COMPOSE_FILE) exec -T kafka kafka-console-producer --bootstrap-server localhost:9092 --topic edr-events-normalized
-	@echo "✅ Test event đã được gửi"
-
-# ====================================================================
-# AGENT INSTALLATION
-# ====================================================================
-
-install-windows: ## Cài đặt Vector agent trên Windows (cần PowerShell)
-	@echo "$(BLUE)Cài đặt Windows Agent...$(NC)"
-	@powershell.exe -ExecutionPolicy Bypass -File agents/windows/install-agent.ps1 -KafkaBrokers "localhost:9093" -Environment "dev" -SkipCertificates
-	@echo "$(GREEN)✅ Windows Agent đã được cài đặt$(NC)"
-
-install-linux: ## Cài đặt Vector agent trên Linux (cần sudo)
-	@echo "$(BLUE)Cài đặt Linux Agent...$(NC)"
-	@sudo agents/linux/install-agent.sh --brokers "localhost:9093" --environment dev --skip-certificates
-	@echo "$(GREEN)✅ Linux Agent đã được cài đặt$(NC)"
-
-uninstall-windows: ## Gỡ cài đặt Windows Agent
-	@echo "$(RED)Gỡ cài đặt Windows Agent...$(NC)"
-	@powershell.exe -ExecutionPolicy Bypass -File agents/windows/install-agent.ps1 -Uninstall
-
-uninstall-linux: ## Gỡ cài đặt Linux Agent
-	@echo "$(RED)Gỡ cài đặt Linux Agent...$(NC)"
-	@sudo agents/linux/install-agent.sh --uninstall
-
-# ====================================================================
-# BUILD & PACKAGE
-# ====================================================================
-
-build: ## Build tất cả Go services
-	@echo "$(BLUE)Building Go services...$(NC)"
-	@cd server/go-services/indexer && go build -o bin/indexer .
-	@cd server/go-services/alert-router && go build -o bin/alert-router .
-	@cd server/go-services/process-graph-api && go build -o bin/process-graph-api .
-	@echo "$(GREEN)✅ Đã build tất cả Go services$(NC)"
-
-docker-build: ## Build Docker images cho Go services
-	@echo "$(BLUE)Building Docker images...$(NC)"
-	@docker build -t edr-indexer:latest server/go-services/indexer/
-	@docker build -t edr-alert-router:latest server/go-services/alert-router/
-	@docker build -t edr-process-graph-api:latest server/go-services/process-graph-api/
-	@echo "$(GREEN)✅ Đã build tất cả Docker images$(NC)"
-
-# ====================================================================
-# DATA MANAGEMENT
-# ====================================================================
-
-create-indices: ## Tạo OpenSearch indices và templates
-	@echo "$(BLUE)Tạo OpenSearch indices...$(NC)"
-	@curl -X PUT "localhost:9200/_index_template/edr-events" -H "Content-Type: application/json" -d @infrastructure/opensearch/event-template.json
-	@curl -X PUT "localhost:9200/_index_template/edr-alerts" -H "Content-Type: application/json" -d @infrastructure/opensearch/alert-template.json
-	@echo "$(GREEN)✅ Đã tạo OpenSearch templates$(NC)"
-
-backup-data: ## Backup data từ OpenSearch
-	@echo "$(BLUE)Backing up OpenSearch data...$(NC)"
-	@mkdir -p backups/$(shell date +%Y%m%d)
-	@curl -X GET "localhost:9200/_cat/indices?v" > backups/$(shell date +%Y%m%d)/indices.txt
-	@echo "$(GREEN)✅ Backup completed in backups/$(shell date +%Y%m%d)/$(NC)"
-
-# ====================================================================
-# DEVELOPMENT UTILITIES
-# ====================================================================
-
-fmt: ## Format code (Go và shell scripts)
-	@echo "$(BLUE)Formatting code...$(NC)"
-	@find server/go-services -name "*.go" -exec gofmt -w {} \;
-	@find agents -name "*.sh" -exec shfmt -w {} \;
-	@echo "$(GREEN)✅ Code đã được format$(NC)"
-
-lint: ## Lint code
-	@echo "$(BLUE)Linting code...$(NC)"
-	@find server/go-services -name "*.go" -exec golint {} \;
-	@find agents -name "*.sh" -exec shellcheck {} \;
-	@echo "$(GREEN)✅ Linting completed$(NC)"
-
-docs: ## Generate documentation
-	@echo "$(BLUE)Generating documentation...$(NC)"
-	@mkdir -p docs/generated
-	@go doc -all server/go-services/... > docs/generated/go-services.md
-	@echo "$(GREEN)✅ Documentation generated$(NC)"
-
-# ====================================================================
-# PRODUCTION UTILITIES
-# ====================================================================
-
-prod-check: ## Kiểm tra readiness cho production
-	@echo "$(BLUE)Kiểm tra production readiness...$(NC)"
-	@echo "🔍 Checking configurations..."
-	@test -f agents/shared/certificates/ca.crt || echo "❌ Missing production certificates"
-	@test -f infrastructure/kubernetes/namespace.yaml || echo "❌ Missing Kubernetes manifests"
-	@echo "🔍 Checking security..."
-	@grep -r "password.*admin" infrastructure/ && echo "❌ Default passwords found" || echo "✅ No default passwords"
-	@echo "🔍 Checking resource limits..."
-	@grep -r "memory:" infrastructure/docker-compose.yml || echo "⚠️  No memory limits set"
-	@echo "$(GREEN)✅ Production check completed$(NC)"
-
-# ====================================================================
-# CLEANUP UTILITIES
-# ====================================================================
-
-clean-logs: ## Xóa logs cũ
-	@echo "$(BLUE)Cleaning old logs...$(NC)"
-	@find /tmp -name "*vector*log" -mtime +7 -delete 2>/dev/null || true
-	@docker system prune -f --filter "until=24h"
-	@echo "$(GREEN)✅ Logs cleaned$(NC)"
-
-reset: clean up ## Reset toàn bộ environment
-
-# ====================================================================
-# VARIABLES FOR CONDITIONAL COMMANDS
-# ====================================================================
-
-# Check if running on Windows
-ifeq ($(OS),Windows_NT)
-    DETECTED_OS := Windows
-else
-    DETECTED_OS := $(shell uname -s)
-endif
-
-# Adjust commands based on OS
-ifeq ($(DETECTED_OS),Windows)
-    SHELL_CMD := powershell.exe
-    VECTOR_CMD := vector.exe
-else
-    SHELL_CMD := /bin/bash
-    VECTOR_CMD := vector
-endif
-
-# ====================================================================
-# END OF MAKEFILE
-# ====================================================================
-#
-# HƯỚNG DẪN SỬ DỤNG:
-#
-# 1. Khởi động development:
-#    make dev
-#
-# 2. Kiểm tra trạng thái:
-#    make status
-#
-# 3. Xem logs:
-#    make logs
-#    make logs service=kafka
-#
-# 4. Test:
-#    make test
-#    make send-test-event
-#
-# 5. Cài đặt agents:
-#    make install-windows  (trên Windows)
-#    make install-linux    (trên Linux)
-#
-# 6. Cleanup:
-#    make clean
-#
-# REQUIREMENTS:
-# - Docker và Docker Compose
-# - Make utility
-# - PowerShell (cho Windows agent)
-# - Bash (cho Linux agent)
-# - Go (cho build services)
-#
-# Author: Senior Software Engineer - EDR Platform Team
-# Contact: edr-team@company.com
-# Documentation: https://company.wiki/edr-platform/makefile
-# ====================================================================
+# Help
+help:
+	@echo "VDT2025 EDR - Available commands:"
+	@echo "  build        - Build the original EDR binary"
+	@echo "  build-v2     - Build the EDR v2 binary (using go-sigma-rule-engine)"
+	@echo "  clean        - Clean build artifacts"
+	@echo "  run          - Build and run the original EDR"
+	@echo "  run-v2       - Build and run EDR v2"
+	@echo "  test         - Run tests"
+	@echo "  tidy         - Tidy Go modules"
+	@echo "  docker-build - Build EDR v1 Docker images"
+	@echo "  docker-up    - Start EDR v1 Docker containers"
+	@echo "  docker-down  - Stop EDR v1 Docker containers"
+	@echo "  docker-logs  - Show EDR v1 container logs"
+	@echo "  docker-build-v2 - Build EDR v2 Docker images"
+	@echo "  docker-up-v2    - Start EDR v2 Docker containers"
+	@echo "  docker-down-v2  - Stop EDR v2 Docker containers"
+	@echo "  docker-logs-v2  - Show EDR v2 container logs"
+	@echo "  demo         - Run SSH brute-force attack demo"
+	@echo "  demo-v2      - Run multi-attack simulation demo"
+	@echo "  demo-comprehensive - Run comprehensive attack simulation (SSH, XSS, SQLi, Scanning)"
+	@echo "  help         - Show this help message"

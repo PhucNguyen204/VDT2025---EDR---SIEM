@@ -1,0 +1,53 @@
+data_dir = "/var/lib/vector/data"
+
+[sources.http_logs]
+type = "http"
+address = "0.0.0.0:8080"
+path = "/logs"
+
+[sources.demo_logs]
+type = "demo_logs"
+format = "json"
+interval = 30.0
+
+# Transform để parse JSON từ http_logs
+[transforms.parse_http_logs]
+type = "remap"
+inputs = ["http_logs"]
+source = '''
+# Nếu message là string JSON, parse nó
+if is_string(.message) {
+  parsed_message, err = parse_json(.message)
+  if err == null {
+    . = merge!(., parsed_message)
+  }
+}
+'''
+
+[sinks.console]
+type = "console"
+inputs = ["parse_http_logs", "demo_logs"]
+encoding.codec = "json"
+
+[sinks.file]
+type = "file"
+inputs = ["parse_http_logs", "demo_logs"]
+path = "/var/log/vector/events.log"
+encoding.codec = "json"
+
+[sinks.edr_engine]
+type = "http"
+inputs = ["parse_http_logs"]
+uri = "http://edr-v2-engine:8080/api/v2/events"
+method = "post"
+encoding.codec = "json"
+
+# Batch settings để gửi từng event một
+[sinks.edr_engine.batch]
+  # Wait up to 1 second for 1 event.
+  max_bytes = 10240 # 10 KB
+  timeout_secs = 1
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"

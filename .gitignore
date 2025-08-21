@@ -3,3 +3,4 @@
 /cmd.exe
 /server/edr-detection-engine/bin/*
 !/server/edr-detection-engine/bin/.gitkeep
+/sigma

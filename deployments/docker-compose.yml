@@ -1,0 +1,96 @@
+# ====================================================================
+# EDR DETECTION ENGINE - DOCKER COMPOSE
+# ====================================================================
+# Tác giả: Senior Software Engineer - EDR Platform Team
+# Mô tả: Docker compose để chạy EDR detection engine với Vector
+# ====================================================================
+
+version: '3.8'
+
+services:
+  # Vector collector - nhận logs từ agents
+  vector-collector:
+    image: timberio/vector:0.36.0-alpine
+    container_name: edr-vector-collector
+    ports:
+      - "8080:8080"  # HTTP source cho agents
+      - "8686:8686"  # Vector API
+    volumes:
+      - ../configs/vector-basic.toml:/etc/vector/vector.toml:ro
+      - vector-logs:/var/log/vector
+    environment:
+      - VECTOR_LOG_LEVEL=info
+    command: ["--config", "/etc/vector/vector.toml"]
+    restart: unless-stopped
+    networks:
+      - edr-network
+    # healthcheck:
+    #   test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8686/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+  # EDR Detection Engine
+  edr-detection-engine:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    container_name: edr-detection-engine
+    ports:
+      - "9090:8080"  # Web dashboard và API
+    volumes:
+      - ../sigma/rules:/app/rules:ro  # Mount Sigma rules
+    environment:
+      - EDR_PORT=8080
+      - EDR_RULES_DIR=/app/rules
+      - EDR_LOG_LEVEL=info
+      - VECTOR_ENDPOINT=http://vector-collector:8686
+      - GIN_MODE=release
+    depends_on:
+      - vector-collector
+    restart: unless-stopped
+    networks:
+      - edr-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Log viewer (optional) - để xem logs dễ dàng
+  log-viewer:
+    image: amir20/dozzle:latest
+    container_name: edr-log-viewer
+    ports:
+      - "8888:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DOZZLE_NO_ANALYTICS=true
+    restart: unless-stopped
+    networks:
+      - edr-network
+
+  # Webhook server để test (optional)
+  webhook-server:
+    image: tarampampam/webhook-tester:latest
+    container_name: edr-webhook-server
+    ports:
+      - "8090:8080"
+    environment:
+      - LISTEN_ADDR=0.0.0.0
+      - LISTEN_PORT=8080
+    restart: unless-stopped
+    networks:
+      - edr-network
+
+volumes:
+  vector-logs:
+    driver: local
+
+networks:
+  edr-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
