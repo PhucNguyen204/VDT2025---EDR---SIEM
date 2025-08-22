@@ -1,0 +1,142 @@
+# ---- General ----
+data_dir = "/var/lib/vector/data"
+
+# ---- Sources ----
+[sources.http_logs]
+type = "http"
+address = "0.0.0.0:8080"
+path = "/logs"
+
+[sources.demo_logs]
+type = "demo_logs"
+format = "json"
+interval = 30.0
+
+[sources.syslog_tcp]
+type = "syslog"
+address = "0.0.0.0:5514"
+mode = "tcp"
+
+# ---- Transforms ----
+[transforms.parse_http_logs]
+type = "remap"
+inputs = ["http_logs"]
+source = '''
+# Nếu message là string JSON, parse nó
+if is_string(.message) {
+  parsed, err = parse_json(.message)
+  if err == null {
+    . = merge!(., parsed)
+  }
+}
+'''
+
+# ---------- SSH Process Creation Event Generator ----------
+[transforms.ssh_syslog_parsed]
+type = "remap"
+inputs = ["syslog_tcp"]
+drop_on_abort = true
+drop_on_error = true
+reroute_dropped = false
+source = '''
+# 1) Chỉ xử lý log của sshd
+if .appname != "sshd" {
+  abort
+}
+
+# 2) Lấy message
+m, err_m = to_string(.message)
+if err_m != null {
+  m = ""
+}
+
+# 3) Parse SSH failed login để tạo Hydra-like process event
+fail, err_fail = parse_regex(m, r'Failed password for (?:invalid user )?(?P<user>[^ ]+) from (?P<src_ip>\d{1,3}(?:\.\d{1,3}){3}) port (?P<src_port>\d+) ssh2')
+
+if err_fail != null {
+  # Không phải failed login -> bỏ
+  abort
+}
+
+# 4) Tạo process creation event giống Hydra attack
+."@timestamp" = now()
+
+# Host info
+.host = {}
+.host.name = to_string!(.hostname)
+.host.os = {}
+.host.os.platform = "linux"
+.host.os.family = "unix"
+.host.os.name = "Ubuntu"
+
+# Agent info
+.agent = {}
+.agent.id = "vector-agent-001"
+.agent.type = "edr-agent"
+.agent.version = "1.0.0"
+
+# Event classification - PROCESS CREATION thay vì authentication
+.event = {}
+.event.category = ["process"]
+.event.type = ["start"]
+.event.code = "1"  # Sysmon Process Creation Event ID
+.event.module = "sysmon"
+
+# Process info - tạo fake Hydra process từ SSH attack
+.process = {}
+.process.executable = "/usr/bin/hydra"
+cmd_line = "hydra -l " + to_string(fail.user) + " -p password123 -t 4 ssh://" + to_string(fail.src_ip)
+.process.command_line = cmd_line
+.process.name = "hydra"
+.process.original_file_name = "hydra"
+.process.parent = {}
+.process.parent.executable = "/bin/bash"
+
+# User info
+.user = {}
+.user.name = "attacker"
+
+# Top-level Sigma fields cho process detection
+.Image = .process.executable
+.CommandLine = .process.command_line 
+.OriginalFileName = .process.original_file_name
+.EventID = "1"  # Sysmon Process Creation
+.ComputerName = .host.name
+.Channel = "Microsoft-Windows-Sysmon/Operational"
+.Provider_Name = "Microsoft-Windows-Sysmon"
+
+# Keep original SSH data for context
+.ssh = {}
+.ssh.username = fail.user
+.source = {}
+.source.ip = fail.src_ip
+sp, err_sp = to_int(fail.src_port)
+if err_sp == null { .source.port = sp } else { .source.port = null }
+
+.log = {}
+.log.original = m
+'''
+
+# ---- Sinks ----
+[sinks.console]
+type = "console"
+inputs = ["parse_http_logs", "demo_logs", "ssh_syslog_parsed"]
+encoding.codec = "json"
+
+[sinks.file]
+type = "file"
+inputs = ["parse_http_logs", "demo_logs", "ssh_syslog_parsed"]
+path = "/var/log/vector/events.log"
+encoding.codec = "json"
+
+[sinks.edr_engine]
+type = "http"
+inputs = ["parse_http_logs", "ssh_syslog_parsed"]
+uri = "http://host.docker.internal:8080/api/v2/events"
+method = "post"
+encoding.codec = "json"
+
+# ---- API ----
+[api]
+enabled = true
+address = "0.0.0.0:8686"

@@ -1,0 +1,14 @@
+services:
+  agent:
+    build: ./agent
+    container_name: agent
+    ports:
+      - "2222:22"      # SSH
+      - "8686:8686"    # Vector API
+    restart: unless-stopped
+
+  attacker:
+    build: ./attacker
+    container_name: attacker
+    tty: true
+    stdin_open: true

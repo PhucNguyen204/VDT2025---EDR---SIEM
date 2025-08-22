@@ -14,7 +14,7 @@ services:
     environment:
       - EDR_PORT=8080
       - EDR_RULES_DIR=/app/sigma/rules
-      - EDR_LOG_LEVEL=info
+      - EDR_LOG_LEVEL=debug
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
@@ -24,22 +24,22 @@ services:
       start_period: 40s
 
   # Vector Collector (nhận logs từ agent và forward tới EDR v2 engine)
-  vector-collector:
-    image: timberio/vector:0.36.0-alpine
-    container_name: edr-v2-vector-collector
-    ports:
-      - "8081:8080"  # HTTP source cho agents
-      - "8686:8686"  # Vector API
-    volumes:
-      - ../configs/vector-basic.toml:/etc/vector/vector.toml:ro # Mount config file
-      - vector-logs:/var/log/vector
-    environment:
-      - VECTOR_LOG_LEVEL=info
-    command: ["--config", "/etc/vector/vector.toml"]
-    restart: unless-stopped
-    depends_on:
-      edr-v2-engine:
-        condition: service_healthy
+  # vector-collector:
+    # image: timberio/vector:0.49.0-debian
+   #  container_name: edr-v2-vector-collector
+   #  ports:
+     #  - "8081:8080"  # HTTP source cho agents
+     # - "8686:8686"  # Vector API
+    # volumes:
+      # - ../configs/vector-basic.toml:/etc/vector/vector.toml:ro # Mount config file
+     #  - vector-logs:/var/log/vector
+    # environment:
+    #   - VECTOR_LOG_LEVEL=info
+    # command: ["--config", "/etc/vector/vector.toml"]
+   #  restart: unless-stopped
+    # depends_on:
+     #  edr-v2-engine:
+      #   condition: service_healthy
 
   # Dozzle - Log viewer
   edr-log-viewer:

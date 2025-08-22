@@ -40,6 +40,12 @@ func (e Event) Keywords() ([]string, bool) {
 		"http.request.body.content",
 		"alert.signature",
 		"payload_printable",
+		"cs-uri-query",
+		"cs-uri-stem",
+		"url.query",
+		"url.original",
+		"http.request.body",
+		"request_body",
 	}
 
 	for _, field := range keywordFields {
@@ -57,6 +63,15 @@ func (e Event) Keywords() ([]string, bool) {
 				if str, ok := v.(string); ok && str != "" {
 					keywords = append(keywords, str)
 				}
+			}
+		}
+	}
+
+	// Debug: log extracted keywords
+	if len(keywords) > 0 {
+		for _, keyword := range keywords {
+			if strings.Contains(keyword, "<script>") || strings.Contains(keyword, "select") || strings.Contains(keyword, "=") {
+				fmt.Printf("[DEBUG] Extracted keyword: %s\n", keyword)
 			}
 		}
 	}
@@ -114,6 +129,11 @@ func (e Event) getNestedValue(path string) (interface{}, bool) {
 
 // handleFieldMapping handles common field mappings for Sigma rules
 func (e Event) handleFieldMapping(field string) (interface{}, bool) {
+	// Debug: log field lookups for web events
+	if strings.Contains(field, "cs-") || strings.Contains(field, "sc-") {
+		// This helps debug web field mappings
+	}
+
 	// Map common Sigma fields to ECS-like fields
 	fieldMappings := map[string][]string{
 		// Windows Event Log mappings
