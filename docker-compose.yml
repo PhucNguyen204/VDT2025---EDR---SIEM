@@ -1,4 +1,21 @@
 services:
+  edr-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.edr-server
+    container_name: edr-server
+    ports:
+      - "8080:8080"    # EDR API
+    restart: unless-stopped
+    volumes:
+      - ./sigma/rules:/app/sigma/rules:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   agent:
     build: ./agent
     container_name: agent
@@ -6,9 +23,19 @@ services:
       - "2222:22"      # SSH
       - "8686:8686"    # Vector API
     restart: unless-stopped
+    depends_on:
+      edr-server:
+        condition: service_healthy
+    environment:
+      - EDR_SERVER_URL=http://edr-server:8080
 
   attacker:
     build: ./attacker
     container_name: attacker
     tty: true
     stdin_open: true
+    depends_on:
+      - agent
+    environment:
+      - TARGET_HOST=agent
+      - TARGET_PORT=22

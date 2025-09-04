@@ -40,6 +40,13 @@ func New() (*App, error) {
 	}, nil
 }
 
+// NewApp creates a new EDR application with provided engine
+func NewApp(edrEngine *engine.Engine) *App {
+	return &App{
+		engine: edrEngine,
+	}
+}
+
 // Run starts the application
 func (app *App) Run() error {
 	// Start engine
@@ -55,7 +62,8 @@ func (app *App) Run() error {
 func createEngine(cfg *config.AppConfig) (*engine.Engine, error) {
 	engineConfig := cfg.ToEngineConfig()
 
-	edrEngine, err := engine.NewEngine(engineConfig)
+	// Use empty rules for legacy compatibility - will be loaded separately
+	edrEngine, err := engine.NewEngine(engineConfig, []string{})
 	if err != nil {
 		return nil, err
 	}

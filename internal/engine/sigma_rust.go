@@ -4,22 +4,6 @@ package engine
 #cgo LDFLAGS: -L../../lib -lsigma_engine
 #include "../../lib/sigma_engine.h"
 #include <stdlib.h>
-
-typedef struct {
-    size_t* matched_rules_ptr;
-    size_t matched_rules_len;
-    size_t nodes_evaluated;
-    size_t primitive_evaluations;
-    int error_code;
-} CEngineResult;
-
-typedef void CSigmaEngine;
-
-CSigmaEngine* sigma_engine_create(char** rules_ptr, size_t rules_len);
-CEngineResult sigma_engine_evaluate(CSigmaEngine* engine_ptr, char* json_event);
-void sigma_engine_free_result(size_t* matched_rules_ptr, size_t matched_rules_len);
-void sigma_engine_destroy(CSigmaEngine* engine_ptr);
-int sigma_engine_stats(CSigmaEngine* engine_ptr, size_t* rule_count, size_t* node_count, size_t* primitive_count);
 */
 import "C"
 import (
@@ -35,7 +19,7 @@ import (
 
 // RustSigmaEngine wraps the Rust sigma-engine via FFI
 type RustSigmaEngine struct {
-	engine    *C.CSigmaEngine
+	engine    unsafe.Pointer
 	mu        sync.RWMutex
 	ruleYamls []string
 	ruleCount uint64
@@ -78,7 +62,7 @@ func NewRustSigmaEngine(ruleYamls []string) (*RustSigmaEngine, error) {
 	}
 
 	rustEngine := &RustSigmaEngine{
-		engine:    engine,
+		engine:    unsafe.Pointer(engine),
 		ruleYamls: ruleYamls,
 		ruleCount: uint64(len(ruleYamls)),
 		startTime: time.Now(),

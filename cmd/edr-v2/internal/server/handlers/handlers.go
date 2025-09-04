@@ -61,7 +61,14 @@ func Events(engine *engine.Engine) gin.HandlerFunc {
 // Stats returns current engine statistics
 func Stats(engine *engine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		stats := engine.GetStats()
+		stats, err := engine.GetStats()
+		if err != nil {
+			logrus.Errorf("Failed to get engine stats: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to get engine statistics",
+			})
+			return
+		}
 		c.JSON(http.StatusOK, stats)
 	}
 }
@@ -116,8 +123,13 @@ func parseEvents(body []byte) ([]json.RawMessage, error) {
 // processEventsWithStats processes events and returns statistics
 func processEventsWithStats(engine *engine.Engine, events []json.RawMessage) gin.H {
 	// Get initial stats
-	initialStats := engine.GetStats()
-	initialAlerts := initialStats.AlertsGenerated
+	initialStats, err := engine.GetStats()
+	var initialAlerts uint64 = 0
+	if err != nil {
+		logrus.Errorf("Failed to get initial stats: %v", err)
+	} else {
+		initialAlerts = initialStats.AlertsGenerated
+	}
 
 	processed := 0
 	errors := 0
@@ -133,8 +145,13 @@ func processEventsWithStats(engine *engine.Engine, events []json.RawMessage) gin
 	}
 
 	// Get final stats to calculate alerts generated
-	finalStats := engine.GetStats()
-	alertsGenerated := finalStats.AlertsGenerated - initialAlerts
+	finalStats, err := engine.GetStats()
+	var alertsGenerated uint64 = 0
+	if err != nil {
+		logrus.Errorf("Failed to get final stats: %v", err)
+	} else {
+		alertsGenerated = finalStats.AlertsGenerated - initialAlerts
+	}
 
 	return gin.H{
 		"processed":        processed,

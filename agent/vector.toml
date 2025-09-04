@@ -132,9 +132,10 @@ encoding.codec = "json"
 [sinks.edr_engine]
 type = "http"
 inputs = ["parse_http_logs", "ssh_syslog_parsed"]
-uri = "http://host.docker.internal:8080/api/v2/events"
+uri = "http://edr-server:8080/api/v2/events"
 method = "post"
 encoding.codec = "json"
+headers.Content-Type = "application/json"
 
 # ---- API ----
 [api]
