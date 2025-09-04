@@ -1,0 +1,93 @@
+# Multi-stage build with Rust and Go for Hybrid Engine
+
+# Stage 1: Build Rust sigma-engine
+FROM rust:1.75-alpine AS rust-builder
+
+# Install build dependencies
+RUN apk add --no-cache musl-dev
+
+# Set working directory for Rust
+WORKDIR /rust-app
+
+# Copy Rust source
+COPY sigma-engine/ ./
+
+# Build Rust library
+RUN cargo build --release
+
+# Stage 2: Build Go application with Rust library
+FROM golang:1.21-alpine AS go-builder
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates gcc musl-dev
+
+# Set working directory
+WORKDIR /app
+
+# Copy Rust library from previous stage
+COPY --from=rust-builder /rust-app/target/release/libsigma_engine.so /usr/local/lib/
+COPY --from=rust-builder /rust-app/target/release/libsigma_engine.a /usr/local/lib/
+
+# Update library cache
+RUN ldconfig /usr/local/lib
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Set CGO flags for linking with Rust library
+ENV CGO_ENABLED=1
+ENV CGO_LDFLAGS="-L/usr/local/lib -lsigma_engine"
+ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+
+# Build the hybrid application
+RUN go build -a -o edr-v2-hybrid ./cmd/edr-v2/main_hybrid.go
+
+# Stage 3: Final runtime image
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk --no-cache add ca-certificates libgcc
+
+# Create non-root user
+RUN addgroup -g 1001 -S edr && \
+    adduser -u 1001 -S edr -G edr
+
+# Set working directory
+WORKDIR /app
+
+# Copy the binary from builder stage
+COPY --from=go-builder /app/edr-v2-hybrid ./edr-v2-hybrid
+
+# Copy Rust library for runtime
+COPY --from=rust-builder /rust-app/target/release/libsigma_engine.so /usr/local/lib/
+
+# Copy Sigma rules
+COPY --from=go-builder /app/sigma ./sigma
+
+# Update library cache
+RUN ldconfig /usr/local/lib
+
+# Set runtime library path
+ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+
+# Change ownership to non-root user
+RUN chown -R edr:edr /app
+
+# Switch to non-root user
+USER edr
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Run the hybrid application
+CMD ["./edr-v2-hybrid"]

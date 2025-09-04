@@ -45,8 +45,8 @@ Write-Host "`n[Test 2.3] Test account test/test123..." -ForegroundColor Green
 docker exec attacker hydra -l test -p test123 ssh://agent -t 2 -v
 Start-Sleep 2
 
-# Giai đoạn 3: Mô phỏng tấn công cường độ cao (nhiều luồng)
-Write-Host "`n[GIAI ĐOẠN 3] Test khả năng chịu tải với nhiều kết nối đồng thời" -ForegroundColor Cyan
+# Giai doan 3: Mo phong tan cong cuong do cao nhieu luong
+Write-Host "`n[GIAI DOAN 3] Test kha nang chiu tai voi nhieu ket noi dong thoi" -ForegroundColor Cyan
 Write-Host "=============================================================" -ForegroundColor Cyan
 
 Write-Host "`n[Test 3.1] Kiểm tra với 4 luồng kết nối cùng lúc..." -ForegroundColor Green
@@ -57,8 +57,8 @@ Write-Host "`n[Test 3.2] Test tải nặng với 6 luồng..." -ForegroundColor 
 docker exec attacker hydra -l malicious -p hack123 ssh://agent -t 6 -v
 Start-Sleep 3
 
-# Giai đoạn 4: Kiểm tra các tài khoản dịch vụ hệ thống  
-Write-Host "`n[GIAI ĐOẠN 4] Test security cho các service accounts" -ForegroundColor Cyan
+# Giai doan 4: Kiem tra cac tai khoan dich vu he thong  
+Write-Host "`n[GIAI DOAN 4] Test security cho cac service accounts" -ForegroundColor Cyan
 Write-Host "=================================================" -ForegroundColor Cyan
 
 Write-Host "`n[Test 4.1] Thử tài khoản SSH service..." -ForegroundColor Green
@@ -69,8 +69,8 @@ Write-Host "`n[Test 4.2] Kiểm tra system accounts..." -ForegroundColor Green
 docker exec attacker hydra -l daemon -p daemon ssh://agent -t 2 -v
 Start-Sleep 2
 
-# Giai đoạn 5: Mô phỏng tấn công từ điển (dictionary attack)
-Write-Host "`n[GIAI ĐOẠN 5] Kiểm tra với pattern từ điển mật khẩu" -ForegroundColor Cyan  
+# Giai doan 5: Mo phong tan cong tu dien dictionary attack
+Write-Host "`n[GIAI DOAN 5] Kiem tra voi pattern tu dien mat khau" -ForegroundColor Cyan  
 Write-Host "===============================================" -ForegroundColor Cyan
 
 Write-Host "`n[Test 5.1] Thử các password từ wordlist..." -ForegroundColor Green

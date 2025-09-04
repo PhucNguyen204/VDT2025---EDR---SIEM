@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  # EDR v2 Detection Engine
+  # EDR v2 Detection Engine (Hybrid: Go + Rust)
   edr-v2-engine:
     build:
       context: .. # Build context is the root of the project
-      dockerfile: deployments/Dockerfile.v2 # Path to the Dockerfile
-    container_name: edr-v2-engine
+      dockerfile: deployments/Dockerfile.hybrid # Path to the Hybrid Dockerfile
+    container_name: edr-v2-hybrid-engine
     ports:
       - "8080:8080"  # Web dashboard và API
     volumes:

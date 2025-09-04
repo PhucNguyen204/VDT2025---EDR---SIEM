@@ -48,7 +48,7 @@ func (s *Server) setupRouter() *gin.Engine {
 	// Serve dashboard
 	router.Static("/static", "./web")
 	router.GET("/dashboard", func(c *gin.Context) {
-		c.File("./web/dashboard.html")
+		c.File("./web/dashboard_simple.html")
 	})
 
 	// API routes
